@@ -14,6 +14,7 @@
 (define-constant ERR-PAYMENT-FAILED (err u109))
 (define-constant ERR-INVALID-PRINCIPAL (err u110))
 (define-constant ERR-MAINTENANCE-REQUIRED (err u111))
+(define-constant ERR-INVALID-INPUT (err u112))
 
 ;; Contract owner
 (define-data-var contract-owner principal tx-sender)
@@ -109,6 +110,51 @@
 (define-constant PAYMENT-PENALTY "penalty")
 (define-constant PAYMENT-MAINTENANCE "maintenance")
 
+;; Input validation functions
+(define-private (is-valid-category (category (string-ascii 64)))
+  (or (is-eq category CATEGORY-CONSTRUCTION)
+      (is-eq category CATEGORY-MEDICAL)
+      (is-eq category CATEGORY-INDUSTRIAL)
+      (is-eq category CATEGORY-TECHNOLOGY)
+      (is-eq category CATEGORY-AUTOMOTIVE))
+)
+
+(define-private (is-valid-condition (condition (string-ascii 32)))
+  (or (is-eq condition CONDITION-NEW)
+      (is-eq condition CONDITION-EXCELLENT)
+      (is-eq condition CONDITION-GOOD)
+      (is-eq condition CONDITION-FAIR))
+)
+
+(define-private (is-valid-payment-type (payment-type (string-ascii 32)))
+  (or (is-eq payment-type PAYMENT-MONTHLY)
+      (is-eq payment-type PAYMENT-DEPOSIT)
+      (is-eq payment-type PAYMENT-PENALTY)
+      (is-eq payment-type PAYMENT-MAINTENANCE))
+)
+
+(define-private (is-valid-equipment-id (equipment-id uint))
+  (and (> equipment-id u0) 
+       (<= equipment-id (var-get equipment-counter)))
+)
+
+(define-private (is-valid-lease-id (lease-id uint))
+  (and (> lease-id u0) 
+       (<= lease-id (var-get lease-counter)))
+)
+
+(define-private (is-non-empty-string (str (string-ascii 256)))
+  (> (len str) u0)
+)
+
+(define-private (is-non-empty-string-512 (str (string-ascii 512)))
+  (> (len str) u0)
+)
+
+(define-private (is-non-empty-string-64 (str (string-ascii 64)))
+  (> (len str) u0)
+)
+
 ;; Modifiers
 (define-private (is-contract-owner)
   (is-eq tx-sender (var-get contract-owner))
@@ -129,7 +175,10 @@
   (let ((equipment-id (+ (var-get equipment-counter) u1)))
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
     (asserts! (> value u0) ERR-INVALID-AMOUNT)
-    (asserts! (> (len name) u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-non-empty-string name) ERR-INVALID-INPUT)
+    (asserts! (is-non-empty-string-512 description) ERR-INVALID-INPUT)
+    (asserts! (is-valid-category category) ERR-INVALID-INPUT)
+    (asserts! (is-valid-condition condition) ERR-INVALID-INPUT)
     
     (map-set equipment-registry
       { equipment-id: equipment-id }
@@ -155,6 +204,7 @@
 (define-public (update-equipment-availability (equipment-id uint) (available bool))
   (let ((equipment (unwrap! (map-get? equipment-registry { equipment-id: equipment-id }) ERR-NOT-FOUND)))
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-equipment-id equipment-id) ERR-INVALID-INPUT)
     (asserts! (is-eq tx-sender (get owner equipment)) ERR-NOT-AUTHORIZED)
     
     (map-set equipment-registry
@@ -176,10 +226,12 @@
     (lease-id (+ (var-get lease-counter) u1))
   )
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-equipment-id equipment-id) ERR-INVALID-INPUT)
     (asserts! (is-eq tx-sender (get owner equipment)) ERR-NOT-AUTHORIZED)
     (asserts! (get is-available equipment) ERR-EQUIPMENT-NOT-AVAILABLE)
     (asserts! (> duration-blocks u0) ERR-INVALID-DURATION)
     (asserts! (> monthly-payment u0) ERR-INVALID-AMOUNT)
+    (asserts! (>= security-deposit u0) ERR-INVALID-AMOUNT)
     (asserts! (is-standard lessee) ERR-INVALID-PRINCIPAL)
     
     ;; Create lease agreement
@@ -226,6 +278,8 @@
     (lessor-amount (- payment-amount platform-fee-amount))
   )
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-lease-id lease-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-payment-type payment-type) ERR-INVALID-INPUT)
     (asserts! (or (is-eq tx-sender (get lessee lease)) 
                   (is-eq tx-sender (get lessor lease))) ERR-NOT-AUTHORIZED)
     (asserts! (<= block-height (get end-block lease)) ERR-LEASE-EXPIRED)
@@ -270,6 +324,7 @@
 (define-public (terminate-lease (lease-id uint))
   (let ((lease (unwrap! (map-get? lease-agreements { lease-id: lease-id }) ERR-NOT-FOUND)))
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-lease-id lease-id) ERR-INVALID-INPUT)
     (asserts! (or (is-eq tx-sender (get lessor lease))
                   (is-eq tx-sender (get lessee lease))) ERR-NOT-AUTHORIZED)
     (asserts! (get is-active lease) ERR-LEASE-NOT-ACTIVE)
@@ -305,6 +360,10 @@
     (record-id (+ (var-get maintenance-counter) u1))
   )
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-equipment-id equipment-id) ERR-INVALID-INPUT)
+    (asserts! (is-non-empty-string-64 maintenance-type) ERR-INVALID-INPUT)
+    (asserts! (>= cost u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-non-empty-string description) ERR-INVALID-INPUT)
     (asserts! (is-eq tx-sender (get owner equipment)) ERR-NOT-AUTHORIZED)
     
     (map-set maintenance-records
@@ -333,6 +392,7 @@
 (define-public (transfer-lease-token (lease-id uint) (new-owner principal))
   (let ((lease (unwrap! (map-get? lease-agreements { lease-id: lease-id }) ERR-NOT-FOUND)))
     (asserts! (is-contract-active) ERR-NOT-AUTHORIZED)
+    (asserts! (is-valid-lease-id lease-id) ERR-INVALID-INPUT)
     (asserts! (is-eq tx-sender (get lessee lease)) ERR-NOT-AUTHORIZED)
     (asserts! (get is-active lease) ERR-LEASE-NOT-ACTIVE)
     (asserts! (is-standard new-owner) ERR-INVALID-PRINCIPAL)
@@ -439,6 +499,7 @@
   (begin
     (asserts! (is-contract-owner) ERR-NOT-AUTHORIZED)
     (asserts! (var-get contract-paused) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
     (try! (stx-transfer? amount (as-contract tx-sender) (var-get contract-owner)))
     (ok true)
   )
